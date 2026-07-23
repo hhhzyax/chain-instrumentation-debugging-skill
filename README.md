@@ -1,2 +1,70 @@
-# chain-instrumentation-debugging-skill
-Use when a bug has been traced through static code analysis but the root cause remains hidden—every code path looks correct in isolation yet the runtime behavior is wrong. The methodology adds targeted instrumentation across a call chain to capture the full data flow, identifying exactly where and why correct state turns incorrect.
+# chain-instrumentation-debugging
+
+> 当静态代码分析走到死胡同时，在调用链上全链路埋点，用日志重建数据流，找到"正确的状态是在哪一步被谁改坏的"。
+
+## 解决了什么问题
+
+`systematic-debugging` 很强，但它依赖 AI 通读代码、推理逻辑、形成假设——本质是**静态分析**。有一类 bug 每条代码路径单独看都逻辑正确，运行时结果就是不对。静态分析对这类 bug 无能为力，因为问题不在任何一段代码的逻辑里，而在多段代码**交叉作用的动态行为**中。
+
+这个 skill 就是针对这类场景的补充：不要反复读代码，而是在调用链的每个关键节点插入带调用来源标签的日志，一次运行拿到全链路日志，追踪数据从哪里开始变坏的。
+
+## 一个真实的例子
+
+多楼层地图编辑器中，切换到坡道 A 单层后，**右半边道路完全不显示**。
+
+静态分析的结论是"一切正确"：道路数据确实属于坡道 A，切换到坡道 A 时也确实调用了 `show()` 让它显示。每条路径单独看都是对的。
+
+按链式插桩法，在调用链上加了 `caller` 标签日志后，同一个道路 ID 在日志中出现了两次：
+
+```
+[APPLY] id=20029 visible=true  caller=main     ← 正确！主循环设为可见
+[APPLY] id=20029 visible=false caller=recurse  ← BUG！被递归覆盖了
+```
+
+进一步加 parent probe 探头，发现道路作为路口的子实例，绑定逻辑按距离贪心匹配路口时**没有按楼层过滤**——坡道 A 的道路被绑定到了坡道 B 的路口上。坡道 B 的路口被隐藏时，递归把坡道 A 的道路也一起隐藏了。
+
+不是某一行的逻辑写错了。两个独立正确的子系统（路口绑定 + 递归可见性传播）在缺乏楼层隔离的情况下交叉产生了错误行为。没有全链路日志，光靠读代码几乎不可能定位。
+
+## 不止能找代码 bug
+
+这个 skill 创建后被用于多个场景，暴露了方法论原先的盲区——两次使用中，根因都不在初始分析的代码链路内：
+
+- **Delete 键删除元素后视觉残留**：数据删了、`map.remove()` 也调了，但 AMap 的 `mouseover` 事件还绑定在已删除对象上，鼠标悬停时 `setOptions()` 又把线条画了回来。根因是**事件残留**，不在数据流里。
+
+- **文件选择器记不住上次目录**：改了 3 个文件、跑了 4 轮插桩，最终写了一个纯 HTML 隔离测试才发现——**Edge on Linux 根本没实现这个功能**。根因在平台层，不在代码里。
+
+基于这些教训，方法论现在包含了"当插桩说一切正常时向外扩展"的步骤：事件残留 → 定时器 → 外部库内部状态 → 平台隔离验证。
+
+## 快速概览
+
+```
+第〇步：先看失败模式（空间/数量/ID 分布往往直接指向根因）
+第一步：理清数据从入口到出口经过了谁的手
+第二步：一次性给每个节点加日志（caller 标签是核心）
+第三步：加 parent probe，记录"谁影响了谁"
+第3.5步：如果插桩说一切正常 → 向外扩展（事件、定时器、外部库、平台）
+第四步：追踪目标对象的完整生命周期，找翻转点
+第五步：git checkout 清理所有调试桩，施加最小修复
+```
+
+## 安装
+
+```bash
+# 克隆到 Claude Code 用户 skills 目录
+git clone https://github.com/hhhzyax/chain-instrumentation-debugging-skill.git \
+  ~/.claude/skills/chain-instrumentation-debugging
+```
+
+## 使用
+
+在 Claude Code 中：
+
+```
+/chain-instrumentation-debugging
+```
+
+或者直接描述你的 bug（如果 skill description 匹配，AI 会自动加载）。
+
+## 与 systematic-debugging 的关系
+
+此技能是 `systematic-debugging` 的补充。`systematic-debugging` 定义了四阶段调试流程（根因→模式→假设→实施），本技能提供**第一阶段中收集运行时证据的具体技术**——当静态分析走不通时，如何高效地在调用链上插桩收集证据。
